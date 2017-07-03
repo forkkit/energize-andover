@@ -129,21 +129,10 @@ mad: Data --> int
 def mad(data, **kwds):
     return abs(data.sub(data.median(**kwds),axis=0)).median(**kwds)
 
-""" mad_rankings: Series, int --> Series
-Returns Series with ratios of median residual / MAD
-uses rolling window of desired size (data point count)
 """
-def mad_rankings(series, w_size):
-    if isinstance(w_size,str):
-        roll = series.rolling(window=w_size)
-    else:
-        roll = series.rolling(window=w_size, center=True, min_periods=1)
-    meds = roll.median()
-    # convert numpy nd-array into pandas series before calculation
-    mads = roll.apply(lambda nda: mad(pd.Series(nda)))
-    return (series-meds)/mads
-
-# Plot a normal distribution with the given mu and sigma
+plot_normal: float, float --> void
+Plot a normal distribution with the given mu and sigma
+"""
 def plot_normal(mu, sigma, **kwds):
     x = np.linspace(mu-8*sigma,mu+8*sigma, 100)
     plt.plot(x,mlab.normpdf(x, mu, sigma), **kwds)
