@@ -18,6 +18,7 @@ import matplotlib.mlab as mlab
 data_path = 'resources/2017 Mar - 2016 Aug - Electric - Detail - 24 Hrs.csv'
 
 df_energy = pd.read_csv(data_path, skipfooter=3, engine='python', index_col=0)
+df_energy.dropna(inplace=True)
 df_energy.index = pd.to_datetime(df_energy.index)
 
 
@@ -122,8 +123,10 @@ def ical_ranges(file):
         ranges.append(event_range)
     return ranges
 
+
 """
 mad: Data --> int
+Get the median absolute deviation of the Series or each Dataframe column
 """
 
 def mad(data, **kwds):

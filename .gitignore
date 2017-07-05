@@ -1,4 +1,5 @@
-*
+/*
 
-!.gitignore
-!energize.py
+!/.gitignore
+!/energize.py
+!/resources/
