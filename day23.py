@@ -7,6 +7,7 @@ Created on Fri Jul  7 09:16:55 2017
 """
 import numpy as np
 import scipy.stats as stats
+import scipy.optimize as optimize
 import pandas as pd
 import energize as egz
 import matplotlib.pyplot as plt
@@ -80,3 +81,4 @@ plt.legend(handles=[blue_patch, yellow_patch])
 
 
 plt.plot(x,norm_pdf)
+
