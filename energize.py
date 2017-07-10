@@ -13,7 +13,9 @@ import pytz
 import datetime
 import matplotlib.pyplot as plt
 import matplotlib.mlab as mlab
-
+from scipy import optimize
+from scipy import stats
+import math
 
 data_path = 'resources/2017 Mar - 2016 Aug - Electric - Detail - 24 Hrs.csv'
 
@@ -176,3 +178,22 @@ def trapz(data, offset=None):
     grouped = consecutives(data,offset)
     approx_kwh = lambda x: np.trapz(x,x.index).astype('timedelta64[h]').astype(int)
     return grouped.aggregate(approx_kwh).sum()
+
+"""
+lognorm_params: Series --> ( float, float, float )
+Returns the shape, loc, and scale of the lognormal distribution of the sample data
+"""
+
+def lognorm_params(series):
+    # resolve issues with taking the log of zero
+    np.seterr(divide='ignore')
+    log_data = np.log(series)
+    np.seterr(divide='warn')
+    log_data[np.isneginf(log_data)] = 0
+    
+    kde = stats.gaussian_kde(log_data)
+    est_std = mad(log_data)*1.4826
+    est_mu = optimize.minimize_scalar(lambda x: -1*kde.pdf(x)[0],
+                                      method='bounded',
+                                      bounds=(log_data.min(),log_data.max())).x
+    return (est_std, 0, math.exp(est_mu))
