@@ -197,3 +197,21 @@ def lognorm_params(series):
                                       method='bounded',
                                       bounds=(log_data.min(),log_data.max())).x
     return (est_std, 0, math.exp(est_mu))
+
+"""
+adjust_sample: Series *int --> Series
+returns an adjusted version of the data that approximately follows the
+energize fitted lognormal distribution
+
+Buffer count (for setting the quantiles) defaults to 1 on each side (to take
+the place of the 0th and 100th percentiles) and can optionally be changed
+"""
+
+def adjust_sample(series, buffer=1):
+    fit_params = lognorm_params(series)
+    s_sorted = series.sort_values()
+    q_step = 1/(series.size+2*buffer-1)
+    q_array = np.linspace(buffer*q_step, 1-buffer*q_step, series.size)
+    quantiles=pd.Series(q_array, s_sorted.index).sort_index()
+    return pd.Series(stats.lognorm.ppf(quantiles,*fit_params),
+                     quantiles.index)
