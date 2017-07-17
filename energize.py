@@ -33,7 +33,10 @@ or a tuple of start/end datetime indexes
 """
 def range_token_df(data, token):
     if (type(token)==str):
-        return data[token]
+        try:
+            return data[token]
+        except KeyError:
+            print('[!] energize.py : range_token_df : ' + token+' not in range')
     else: # token is a start/end tuple
         return data[slice(*token)]
 
