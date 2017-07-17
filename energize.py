@@ -35,7 +35,7 @@ def range_token_df(data, token):
     if (type(token)==str):
         try:
             return data[token]
-        except KeyError:
+        except KeyError: #returns None
             print('[!] energize.py : range_token_df : ' + token+' not in range')
     else: # token is a start/end tuple
         return data[slice(*token)]
@@ -62,7 +62,7 @@ PARAMETERS:
 data : DataFrame or Series with DateTimeIndex
 *times: Tuple with start and end time strings as 'HH:MM'
 	or list of such tuples
-*include: Accepts:
+*include: Accepts a DataRange which is:
     1) A datetime index (partial or formal)
     2) A tuple of start and end datetime indexes (See 1)
         	Enter None to set to range min or max
