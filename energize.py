@@ -17,13 +17,6 @@ from scipy import optimize
 from scipy import stats
 import math
 
-data_path = 'resources/2017 Mar - 2016 Aug - Electric - Detail - 24 Hrs.csv'
-
-df_energy = pd.read_csv(data_path, skipfooter=3, engine='python', index_col=0)
-df_energy.dropna(inplace=True)
-df_energy.index = pd.to_datetime(df_energy.index)
-
-
 """
 range_token_df: DataFrame, RangeToken --> DataFrame
 Returns a dataframe filtered by the range token provided.
@@ -78,8 +71,6 @@ data : DataFrame or Series with DateTimeIndex
 starred parameters are optional
 ranges are all inclusive
 """
-test_exclusions = ['2015-07-30','2016-08-17']
-test_range = [('2015-07-31','2016-07-05'),('2016-08-02','2016-08-05'),'2016-09-05']
 
 def time_filter(data, **kwds):
     out = data
@@ -218,3 +209,28 @@ def adjust_sample(series, buffer=1):
     quantiles=pd.Series(q_array, s_sorted.index).sort_index()
     return pd.Series(stats.lognorm.ppf(quantiles,*fit_params),
                      quantiles.index)
+    
+data_path = 'resources/2017 Mar - 2016 Aug - Electric - Detail - 24 Hrs.csv'
+
+df_energy = pd.read_csv(data_path, skipfooter=3, engine='python', index_col=0)
+df_energy.index = pd.to_datetime(df_energy.index)
+
+no_school = ical_ranges('resources/no_school_2016-17.ics')
+half_days = ical_ranges('resources/half_days_2016-17.ics')
+
+df_school = time_filter(df_energy,
+                            times=('07:40','14:20'),
+                            include=('9/2/16','6/16/17'),
+                            daysofweek=[0,1,2,3,4],
+                            blacklist=no_school + half_days
+                            + ['2/9/17','2/13/17','3/14/17','3/15/17'])
+
+df_weekend = time_filter(df_energy,daysofweek=[5,6])
+df_night = time_filter(df_energy,times=('23:00','04:00'),include=('2016-08',None))
+df_summer = time_filter(df_energy,months=[7,8])
+
+df_temp = pd.read_csv('resources/temperature.csv',
+                      index_col=1,
+                      na_values=-9999).drop('STATION',axis=1)
+
+df_temp.index = pd.to_datetime(df_temp.index,format='%Y%m%d')
