@@ -210,9 +210,19 @@ def adjust_sample(series, buffer=1):
     return pd.Series(stats.lognorm.ppf(quantiles,*fit_params),
                      quantiles.index)
     
+"""
+intersect : Data Data --> (Data, Data)
+returns a tuple of the data filtered by their common indexes
+"""
+
+def intersect(data1, data2):
+    ixs = data1.index.intersection(data2.index)
+    return(data1.loc[ixs],data2.loc[ixs])
+    
 data_path = 'resources/2017 Mar - 2016 Aug - Electric - Detail - 24 Hrs.csv'
 
 df_energy = pd.read_csv(data_path, skipfooter=3, engine='python', index_col=0)
+df_energy.dropna(inplace=True)
 df_energy.index = pd.to_datetime(df_energy.index)
 
 no_school = ical_ranges('resources/no_school_2016-17.ics')
