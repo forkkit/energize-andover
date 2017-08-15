@@ -15,6 +15,7 @@ import matplotlib.pyplot as plt
 import matplotlib.mlab as mlab
 from scipy import optimize
 from scipy import stats
+from sklearn.ensemble import RandomForestRegressor
 import math
 
 """
@@ -31,7 +32,7 @@ def range_token_df(data, token):
         except KeyError: #returns None
             print('[!] energize.py : range_token_df : ' + token+' not in range')
     else: # token is a start/end tuple
-        return data[slice(*token)]
+        return data[slice(*token)][:-1]
 
 """
 data_in_range : DataFrame/Series, Data range --> DataFrame/Series
@@ -219,11 +220,168 @@ def intersect(data1, data2):
     ixs = data1.index.intersection(data2.index)
     return(data1.loc[ixs],data2.loc[ixs])
     
+    
+def rolling_window(a, L, S ):  # Window len = L, Stride len/stepsize = S
+    nrows = ((a.size-L)//S)+1
+    n = a.strides[0]
+    return np.lib.stride_tricks.as_strided(a, shape=(nrows,L), strides=(S*n,n))
+
+def rolling_window2D(a,n):
+    # a: 2D Input array 
+    # n: Group/sliding window length
+    return a[np.arange(a.shape[0]-n+1)[:,None] + np.arange(n)]
+
+def pred_ints(model, X, percentile=95):
+    err_down = []
+    err_up = []
+    for x in range(len(X)):
+        preds = []
+        for pred in model.estimators_:
+            preds.append(pred.predict([X[x]])[0])
+        err_down.append(np.percentile(preds, (100 - percentile) / 2. , axis=0 ))
+        err_up.append(np.percentile(preds, 100 - (100 - percentile) / 2. , axis=0))
+    return np.array(err_down), np.array(err_up)
+
+def index_data(ixs_arr,data):
+    return np.apply_along_axis(lambda ixs: data[ixs],0,ixs_arr)
+
+
+class RandomForestModel:
+    """ A timeseries prediction model based on RandomForestRegressor
+    
+    Parameters
+    ----------
+    data : Series
+        A Pandas Series with DateTimeIndex containing the data values to be
+        predicted and used to forecast future values. Features will be created
+        from the DateTimeIndex according to the argument for `time_attrs`
+
+    td_input : timedelta
+        The span of time to be used as the input to the prediction model
+        
+    td_gap : timedelta
+        The span of time to be used as a gap between the input and output of
+        the prediction model
+        
+    td_output : timedelta
+        The span of time to be used as the output of the prediction model
+        
+    time_attrs : list of strings
+        The attributes of the DateTimeIndex to be used as regression features.
+        Only the properties of the first output element will be considered
+        
+    extra_features : DataFrame
+        Additional data properties to be used as regression features. Like the
+        implementation of `time_attrs`, only the properties of the first output
+        element will be used as input. `data` and `extra_features` should share
+        the same index
+    """
+    
+    
+    def __init__(self, data, td_input, td_gap, td_output,
+                 sample_freq=pd.Timedelta(days=1), time_attrs=None,
+                 extra_features=None,n_estimators=10):
+        self.data = data
+        self.n = len(data)
+        self.data_freq = pd.Timedelta(data.index.freq)
+        self.td_input = td_input
+        self.td_gap = td_gap
+        self.td_output = td_output
+        self.sample_freq = sample_freq
+        self.time_attrs = time_attrs
+        self.extra_features = extra_features
+        self.rf = RandomForestRegressor(n_estimators=n_estimators)
+    
+    def _time_features(self,attrs):
+        df_f = pd.DataFrame(index=self.data.index)
+        attrs = ([] if attrs is None else attrs)
+        for attr in attrs:
+            df_f[attr] = getattr(df_f.index,attr)
+        return df_f
+    
+    def _get_index_windows(self):
+        input_size = int(self.td_input / self.data_freq)
+        gap_size = int(self.td_gap / self.data_freq)
+        output_size = int(self.td_output / self.data_freq)
+        ix_windows = rolling_window(self.data.index,
+                                    input_size + gap_size + output_size,
+                                    output_size)
+        X_ixs,_,y_ixs = np.split(ix_windows,[input_size,input_size+gap_size],1)
+        return X_ixs,y_ixs
+    
+    def _get_training_arrays(self):
+        X_ixs,y_ixs = self.index_windows_
+        data_feat = np.array([self.data[w].resample(self.sample_freq).asfreq()
+                                for w in X_ixs])
+        #data_feat = data_feat[:,::int(self.sample_freq/self.data_freq)]
+        df_time_feat = self._time_features(self.time_attrs)
+        time_feat = np.array([df_time_feat.loc[w] for w in y_ixs[:,0]])
+        
+        extra_feat = (np.array([self.extra_features.loc[ixs].stack().values
+                                for ixs in y_ixs])
+            if self.extra_features is not None else np.empty((len(X_ixs),0)))
+                            
+        X = np.concatenate((data_feat,
+                            time_feat,
+                            extra_feat),
+            axis=1)
+        y = np.array([self.data[w] for w in y_ixs])
+        return X,y
+    
+    def train(self):
+        self.index_windows_ = self._get_index_windows()
+        self.training_arrays_ = self._get_training_arrays()
+        self.rf.fit(*self.training_arrays_)
+        
+    def _input_vector(self,timestamp):
+        X_ixs = pd.DatetimeIndex(
+                pd.date_range(timestamp - self.td_gap - self.td_input,
+                              timestamp - self.td_gap,
+                              freq=self.sample_freq,
+                              closed='left'))
+        y_ixs = pd.DatetimeIndex(
+                pd.date_range(timestamp,
+                              timestamp+self.td_output,
+                              freq=self.data_freq,
+                              closed='left'))
+        data_feat = self.data[X_ixs]
+        time_feat = [getattr(timestamp,attr) for attr in self.time_attrs]
+        extra_feat = (self.extra_features.loc[y_ixs].stack().values
+                      if self.extra_features is not None else [])
+        vec = np.concatenate((data_feat,
+                              time_feat,
+                              extra_feat),
+            axis=0)
+        return vec
+    
+    def _predict(self,timestamp):
+        y_pred = self.rf.predict([self._input_vector(timestamp)])[0]
+        ix = pd.date_range(timestamp,
+                           timestamp+self.td_output,
+                           freq=self.data_freq,
+                           closed='left')
+        s_pred = pd.Series(y_pred,ix)
+        return s_pred
+    
+    def next_prediction(self):
+        pred_start_date = (pd.Timestamp(self.data.index.date.max())
+                            + self.td_gap + self.td_output)
+        return self._predict(pred_start_date)
+
+    
 data_path = 'resources/2017 Mar - 2016 Aug - Electric - Detail - 24 Hrs.csv'
 
+data_freq = '15 min'
+pp_day = int(pd.Timedelta('1 day') / pd.Timedelta(data_freq))
+
+
 df_energy = pd.read_csv(data_path, skipfooter=3, engine='python', index_col=0)
-df_energy.dropna(inplace=True)
+#df_energy.dropna(inplace=True)
 df_energy.index = pd.to_datetime(df_energy.index)
+df_energy = df_energy.dropna().resample(data_freq).asfreq()
+df_energy = df_energy.groupby(df_energy.index.date).filter(lambda x: len(x)==pp_day)
+df_energy.fillna(df_energy.shift(-pp_day*7),inplace=True)
+
 
 no_school = ical_ranges('resources/no_school_2016-17.ics')
 half_days = ical_ranges('resources/half_days_2016-17.ics')
