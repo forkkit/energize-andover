@@ -256,9 +256,9 @@ def only_full_days(data,freq=None):
     return data.groupby(data.index.date).filter(lambda x: len(x)==pp_day)
 
 class BaseModel:
-    def __init__(self,data, td_input, td_gap, td_output,
-                 sample_freq=pd.Timedelta(days=1), time_attrs=[],
-                 extra_features=None,n_estimators=10):
+    def __init__(self, data, td_input, td_gap, td_output,
+                 sample_freq=pd.Timedelta(days=1), time_attrs=None,
+                 extra_features=None,est_kwargs=None):
         self.data = data.asfreq(data.index.inferred_freq)
         self.n = len(data)
         self.data_freq = pd.Timedelta(self.data.index.freq)
@@ -266,13 +266,11 @@ class BaseModel:
         self.td_gap = td_gap
         self.td_output = td_output
         self.sample_freq = sample_freq
-        self.time_attrs = time_attrs
-        self.n_estimators = n_estimators
-        self.time_features = self._get_time_features()
-        self.extra_features = (self._validated_feat(extra_features)
-            if extra_features is not None else self._get_blank_feat())
-        self.training_windows_ = self._get_training_windows()
-        
+        self.time_attrs = time_attrs if time_attrs is not None else []
+        self.est_kwargs = est_kwargs if est_kwargs is not None else dict()
+        self.training_windows_ = None
+        self.extra_features = (extra_features if extra_features
+                               else self._get_blank_feat())
 
     def _get_training_windows(self):
         """Get the available input/output training windows for the data.
@@ -295,49 +293,11 @@ class BaseModel:
         y_ixs = np.array(list(zip(y_ixs.min(1),y_ixs.max(1))))
         return X_ixs,y_ixs
     
-    """ I might come back to this
+    """ I might come back to this, the goal is to filter out windows that
+    contain null values in the data or features.
     def _windows_where_valid(self,windows):
         no_nulls = lambda w: ~self.data[slice(*w)].isnull().values.any(),
         return list(filter(no_nulls, windows))"""
-
-    def _get_time_features(self):
-        """ Get a table of time features according to the attributes desired
-        
-        Returns
-        -------
-        df_f  : DataFrame
-            A table extending the full range of the model's data plus space for
-            preduction. Each column holds attributes of the data index as
-            specified in the `BaseModel.time_attrs` array.
-            
-            For instance, if `BaseModel.time_attrs`
-            holds 'month', then `df_f` will have a 'month' column containing
-            `data.index.month`
-        """
-        df_f = self._get_blank_feat()
-        for attr in self.time_attrs:
-            df_f[attr] = getattr(df_f.index,attr)
-        return df_f
-    
-    def _agg_data_features(self,series,slice_):
-        """ Aggregates the pools of data features. Since it may be resource
-        intensive to use every data point as a feature, this lets you combine
-        a group of data points (as specified by `BaseModel.sample_freq`) into
-        their mean value.
-        
-        Parameters
-        ----------
-        series : Series
-            A set of data
-        slice_ : slice
-            A slice of the data to aggregate
-                
-        Returns
-        -------
-        agg : Series
-            The provided slice of data, downsampled and aggregated by mean
-        """
-        return series[slice_].resample(self.sample_freq).mean()
     
     def _get_blank_feat(self):
         """ Gets an empty data structure spanning the range of the model's data
@@ -354,13 +314,16 @@ class BaseModel:
         ix = pd.date_range(start,end,freq=self.data_freq)
         return pd.DataFrame(index=ix)
     
-    def _validated_feat(self,data):
+    def _invalid_feat(self,data):
+        return data.asfreq(self.td_output).isnull().values.any()
+    
+    def _validated_feat(self,feat):
         """ Ensures that the feature set is at a high enough frequency for the
         training windows (at least one point per feature per window)
         
         Parameters
         ----------
-        data : Series or DataFrame
+        feat : Series or DataFrame
             The set of features to validate
         
         Returns
@@ -368,8 +331,13 @@ class BaseModel:
         validated_feat : Series or DataFrame
             The validated feature table, forward filled where needed
         """
-        fallback = data.asfreq(self.td_output).ffill()
-        return data.asfreq(self.td_output).fillna(fallback)
+        
+        #Ensure the extra features are at least the frequency of the output
+        feat_freq = pd.Timedelta(inferred_freq(feat))
+        if feat_freq > self.td_output:
+            feat = feat.asfreq(self.td_output)
+        fallback = feat.asfreq(self.td_output).ffill()
+        return feat.fillna(fallback)
         
     def _get_ixs(self,timestamp):
         """ Gets the list of indexes for prediction of a date
@@ -395,79 +363,17 @@ class BaseModel:
                              freq=self.data_freq,
                              closed='left')
         return X_ix, y_ix
-        
-    def _input_vector(self,series,timestamp):
-        """ Get the input vector for a prediction.
-        
-        Parameters
-        ----------
-        series : Series
-            The historical data to use for data features
-        timestamp : datetime
-            The starting timestamp for the prediction
-            
-        Returns
-        -------
-        vec : ndarray
-            The input vector of shape (n_features)
-        """
-        X_ix, y_ix = self._get_ixs(timestamp)
-        X_slice = slice(X_ix.min(),X_ix.max())
-        y_slice = slice(y_ix.min(),y_ix.max())
-        data_feat = self._agg_data_features(series,X_slice)
-        time_feat = self.time_features.loc[timestamp]
-        extra_feat = self.extra_features[y_slice].stack().values
-        vec = np.concatenate((data_feat, time_feat, extra_feat),
-                             axis=0)
-        return vec
-
-    def _get_pred_std(self,rf,X):
-        """ Get the standard deviations among a forests' decision trees for
-        a certain prediction
-        
-        Parameters
-        ----------
-        rf : RandomForestRegressor
-            The estimator to make a prediction from
-        X : ndarray
-            An input vector
-            
-        Returns
-        -------
-        std : ndarray
-            A list of standard deviations for each of the output variables
-        """
-        all_pred = np.array([t.predict(X) for t in rf])
-        return np.std(all_pred,0).ravel()
     
-    def _get_prediction(self,rf,series,timestamp):
-        """ Get the predicted values and standard deviations starting at a
-        certain time
-        
-        Parameters
-        ----------
-        rf : RandomForestRegressor
-            The model to make the predictions from
-        series : Series
-            The historical data values
-        timestamp : datetime
-            The starting time of the prediction
-            
-        Returns
-        vals : Series
-            The predicted values
-        std : Series
-            The prediction standard deviations
-        """
-        
-        X_pred = [self._input_vector(series,timestamp)]
-        pred_vals = rf.predict(X_pred)[0]
-        pred_std = self._get_pred_std(rf, X_pred)
-        _, y_ix = self._get_ixs(timestamp)
-        vals,std = (pd.Series(pred_vals,y_ix),
-                    pd.Series(pred_std,y_ix))
-        vals,std = [s.rename(series.name) for s in (vals,std)]
-        return vals,std
+    def _get_windows(self,timestamp):
+        X_w = (timestamp - self.td_gap - self.td_input,
+               timestamp - self.td_gap - self.data_freq)
+        y_w = (timestamp,
+               timestamp + self.td_output - self.data_freq)
+        return X_w,y_w
+    
+    def _get_time_feat(self, datetime):
+        timestamp = pd.Timestamp(datetime)
+        return [getattr(timestamp,attr) for attr in self.time_attrs]
     
     def _get_pred_start_date(self,data):
         """ Gets the inferred starting date for the next prediction based off
@@ -487,86 +393,255 @@ class BaseModel:
                             + self.data_freq + self.td_gap)
         return pred_start_date
     
-    def _get_feat(self, series, X_window,y_window):
-        data_feat = self.agg_data_features(series,slice(*X_window))
-        time_feat = self.time_features[y_window[0]]
-        extra_feat= self.extra_features[slice(*y_window)].stack().values
-        return 0
     
     
 class SingleRFModel(BaseModel):
-    def __init__(self, *args, **kwds):
-            super().__init__(*args, **kwds)
-            self.rf = RandomForestRegressor(n_estimators = self.n_estimators)
+    """ A Random Forest Model for forecasting a single set of data
+    (i.e. a single circuit panel)
     
-    def _get_training_arrays(self):
-        series = self.data
-        X_ixs,y_ixs = self.training_windows_
-        data_feat = np.array([self._agg_data_features(series,slice(*w))
-                                for w in X_ixs])
-        time_feat = np.array([self.time_features.loc[d] for d in y_ixs[:,0]])
+    Parameters
+    ----------
+    data : Series
+        The historical data values, and the data type to be forecasted. There
+        should not be any missing values in the data - that should be handled
+        before object initialization. That data should also be at a set
+        frequency (if it is not explicity store in `pandas.DatetimeIndex.freq
+        it will be inferred)
+        
+    td_input : timedelta
+        The size of the input period used for selecting historical data values
+        
+    td_gap : timedelta
+        The size of the gap between the last of the historical data and the
+        start of the output period
+        
+    td_output : timedelta
+        The size of the output period (to be forecasted)
+        
+    sample_freq : timedelta, optional (default=timedelta(days=1))
+        The chunk size that will break up the historical data and aggregate it
+        into features (by mean). By default it will look at the daily averages
+        among the input periods.
+    
+    time_attrs : list of strings, optional (default=None)
+        The list of DatetimeIndex attributes to use as regression features.
+        For example, setting it to `['month','dayofweek'] will consider the
+        month and day of the week of only the first output element
+        
+    extra_features : DataFrame, optional (default=None)
+        Table of additional features to regress on. If the frequency is wider
+        than the output period, it will be foreward filled as needed to
+        maintain consistent input vector shape. If the frequency is more narrow
+        than the output period, all the entries that lie within an output
+        will be used as independent features.
+        
+        For example, if one column is average temperature at weekly frequency,
+        the second column is occupancy data at hourly frequency, and the output
+        period is one day, then the temperature column will be foreward filled
+        to have one point per day and 24 occupancy points will be used as 
+        features.
+        
+    est_kwargs : dict, optional (default=None)
+        Additional keyword arguments to be passed to the
+        sklearn.ensemble.RandomForestRegressor estimator
+        
+    """
+    
+    def __init__(self, *args, **kwds):
+        super().__init__(*args, **kwds)
+        self.rf = RandomForestRegressor(**self.est_kwargs)        
+    
+    def _aggregated_data_features(self, window):
+        """ Aggregates the pools of data features. Since it may be resource
+        intensive to use every data point as a feature, this lets you combine
+        a group of data points (as specified by `BaseModel.sample_freq`) into
+        their mean value.
+        
+        Parameters
+        ----------
+        window : list of datetime
+            Pair of start and end times representing the window to aggregate
+                
+        Returns
+        -------
+        agg : Series
+            The desired slice of data, downsampled and aggregated by mean
+        """
+        return self.data.resample(self.sample_freq).mean()[slice(*window)]
+    
+    def _get_feats(self, X_windows, y_windows):
+        data_feat = np.array([self._aggregated_data_features(w)
+                                for w in X_windows])
+        time_feat = np.array([self._get_time_feat(d)
+                                for d in np.array(y_windows)[:,0]])
         extra_feat = np.array([self.extra_features.loc[slice(*w)].stack().values
-                                for w in y_ixs])
-                            
-        X = np.concatenate((data_feat,
-                            time_feat,
-                            extra_feat),
-            axis=1)
-        y = np.array([series[slice(*w)] for w in y_ixs])
+                                for w in y_windows])
+        return (data_feat,time_feat,extra_feat)
+
+    def _get_training_arrays(self):
+        X_windows,y_windows = self.training_windows_
+        feature_arrs = self._get_feats(*self.training_windows_)
+        X = np.concatenate(feature_arrs, axis=1)
+        y = np.array([self.data[slice(*w)] for w in y_windows])
         return X,y
+        
+    def _input_vector(self,timestamp):
+        """ Get the input vector for a prediction.
+        
+        Parameters
+        ----------
+        timestamp : datetime
+            The starting timestamp for the prediction
+            
+        Returns
+        -------
+        vec : ndarray
+            The input vector of shape (n_features)
+        """
+        X_w,y_w = self._get_windows(timestamp)
+        vec = np.hstack(self._get_feats([X_w],[y_w])).flatten()
+        return vec
+
+    def _get_pred_std(self,X):
+        """ Get the standard deviations among a forests' decision trees for
+        a certain prediction
+        
+        Parameters
+        ----------
+        X : ndarray
+            An input vector
+            
+        Returns
+        -------
+        std : ndarray
+            A list of standard deviations for each of the output variables
+        """
+        all_pred = np.array([t.predict(X) for t in self.rf])
+        return np.std(all_pred,0).ravel()
+    
+    def _get_prediction(self,timestamp):
+        """ Get the predicted values and standard deviations starting at a
+        certain time
+        
+        Parameters
+        ----------
+        timestamp : datetime
+            The starting time of the prediction
+            
+        Returns
+        vals : Series
+            The predicted values
+        std : Series
+            The prediction standard deviations
+        """
+        
+        X_pred = [self._input_vector(timestamp)]
+        pred_vals = self.rf.predict(X_pred)[0]
+        pred_std = self._get_pred_std(X_pred)
+        _, y_ix = self._get_ixs(timestamp)
+        vals,std = (pd.Series(pred_vals,y_ix),
+                    pd.Series(pred_std,y_ix))
+        vals,std = [s.rename(self.data.name) for s in (vals,std)]
+        return vals,std
     
     def train(self):
+        if self.training_windows_ is None:
+            self.training_windows_ = self._get_training_windows()
+        if self._invalid_feat(self.extra_features):
+            self.extra_features = self._validated_feat(self.extra_features)
         self.rf.fit(*self._get_training_arrays())
 
     def predict(self):
-        return self._get_prediction(self.rf,
-                                    self.data,
-                                    self._get_pred_start_date(self.data))
+        """ Predict the next period of data
+        
+        The predicted period will be inferred based off the last entry of
+        the historical data, gap size, and output size.
+        
+        For example, if the historical data contains up to the end of 1/1/17,
+        the gap size is 1 day, and the output size is 1 week, the predicted
+        period will span from the start of 1/3/17 to the end of 1/9/17
+        
+        Returns
+        -------
+        vals : Series
+            List of predicted values for each of the data columns.
+        std : Series
+            List of output standard deviations. This is calculated from the
+            standard deviation of the forests' decision trees for each output
+            variable and is merely an estimation of the true prediction
+            variance. Accuracy is increased with a higher estimator count.
+        """
+        return self._get_prediction(self._get_pred_start_date(self.data))
 
 class MultiRFModel(BaseModel):
-    def __init__(self, *args, column_features=None, **kwargs):
-        super().__init__(*args,**kwargs)
-        self.columns = [self.data[col] for col in self.data]
-        self.column_features = (
-            [self._validated_feat(df) for df in column_features]
-            if column_features is not None
-            else [None for col in self.data])
-        for i in range(len(self.column_features)):
-            if self.column_features[i] is None:
-                self.column_features[i] = self._get_blank_feat()
-        self.estimators = list(map(lambda col:
-            RandomForestRegressor(n_estimators=self.n_estimators),
-            self.data))
+    """ A Random Forest regression model for forecasting multiple sets of data
+    at once. It creates multiple child SingleRFModel objects but avoids
+    repitition of processes like training window calculations
     
-    def _get_training_arrays(self,col_num):
-        X_ixs,y_ixs = self.training_windows_
-        series = self.columns[col_num]
-        data_feat = np.array([self._agg_data_features(series,slice(*w))
-                                for w in X_ixs])
-        time_feat = np.array([self.time_features.loc[w] for w in y_ixs[:,0]])
-        extra_feat = np.array([self.extra_features.loc[slice(*w)].stack().values
-                                for w in y_ixs])
-        df_col_feat = self.column_features[col_num]
-        col_feat = np.array([df_col_feat.loc[slice(*w)].stack().values
-                                for w in y_ixs])
-                            
-        X = np.concatenate((data_feat,
-                            time_feat,
-                            extra_feat,
-                            col_feat),
-            axis=1)
-        y = np.array([series[slice(*w)] for w in y_ixs])
-        return X,y
+    Parameters
+    ----------
+    *args, *kwargs :
+        Arguments to be passed to the children `SingleRFModel` objects (see
+        `SingleRFModel` documentation for details)
+        
+    data : DataFrame
+        Table of data sets to be regressed and forecasted of shape
+        (n_samples, s_sets). There should not be any missing values in the
+        data - that should be handled before object initialization. That data
+        should also be at a set frequency (if it is not explicity store in
+        `pandas.DatetimeIndex.freq it will be inferred)
     
-    def train(self):
-        for i,rf in enumerate(self.estimators):
-            rf.fit(*self._get_training_arrays(i))
+    column_features : dict of DataFrames
+        Table of column-specific extra features to be regressed on. See
+        `SingleRFModel.extra_features` for details of the required format of
+        the DataFrames. The dict keys should correspond to column names in
+        `MultiRFModel.data`
+        
+    """
+    
+    
+    def __init__(self, data, *args, column_features=None, **kwargs):
+        super().__init__(data,*args,**kwargs)
+        self.models = {col:SingleRFModel(data[col],*args,**kwargs) for col in data}
+        if column_features is not None:
+            self._add_column_features(column_features)
+    
+    def _add_column_features(self,column_features):
+        common_feat = self.extra_features
+        for col,col_feat in column_features.items():
+            self.models[col].extra_features = pd.concat(
+                    (common_feat,col_feat),axis=1)
             
+    def train(self):
+        """ Train the model to enable predictions. This trains each of the
+        child `SingleRFModel` objects
+        """
+        self.training_windows_ = self._get_training_windows()
+        for model in self.models.values():
+            model.training_windows_ = self.training_windows_
+            model.train()
+        
     def predict(self):
-        pred_start_date = self._get_pred_start_date(self.data)
-        preds = list(
-                map(lambda rf,s: self._get_prediction(rf,s,pred_start_date),
-                    self.estimators,self.columns))
+        """ Predict the next period of data
+        
+        The predicted period will be inferred based off the last entry of
+        the historical data, gap size, and output size.
+        
+        For example, if the historical data contains up to the end of 1/1/17,
+        the gap size is 1 day, and the output size is 1 week, the predicted
+        period will span from the start of 1/3/17 to the end of 1/9/17
+        
+        Returns
+        -------
+        vals : DataFrame
+            Table of predicted values for each of the data columns.
+        std : DataFrame
+            Table of output standard deviations. This is calculated from the
+            standard deviation of the forests' decision trees for each output
+            variable and is merely an estimation of the true prediction
+            variance. Accuracy is increased with a higher estimator count.
+        """
+        preds = [model.predict() for model in self.models.values()]
         arr_vals, arr_std = list(zip(*preds))
         return (pd.concat(arr_vals,axis=1),
                 pd.concat(arr_std,axis=1))
