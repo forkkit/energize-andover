@@ -789,37 +789,3 @@ class MultiRFModel(BaseModel):
         for attr in attrs:
             log[attr] = BaseModel.to_string(getattr(self,attr))
         return log
-
-data_path = 'resources/2017 Mar - 2016 Aug - Electric - Detail - 24 Hrs.csv'
-
-data_freq = '15 min'
-pp_day = int(pd.Timedelta('1 day') / pd.Timedelta(data_freq))
-
-
-df_energy = pd.read_csv(data_path, skipfooter=3, engine='python', index_col=0)
-#df_energy.dropna(inplace=True)
-df_energy.index = pd.to_datetime(df_energy.index)
-df_energy = df_energy.dropna().resample(data_freq).asfreq()
-df_energy = df_energy.groupby(df_energy.index.date).filter(lambda x: len(x)==pp_day)
-df_energy.fillna(df_energy.shift(-pp_day*7),inplace=True)
-
-
-no_school = ical_ranges('resources/no_school_2016-17.ics')
-half_days = ical_ranges('resources/half_days_2016-17.ics')
-
-df_school = time_filter(df_energy,
-                            times=('07:40','14:20'),
-                            include=('9/2/16','6/16/17'),
-                            daysofweek=[0,1,2,3,4],
-                            blacklist=no_school + half_days
-                            + ['2/9/17','2/13/17','3/14/17','3/15/17'])
-
-df_weekend = time_filter(df_energy,daysofweek=[5,6])
-df_night = time_filter(df_energy,times=('23:00','04:00'),include=('2016-08',None))
-df_summer = time_filter(df_energy,months=[7,8])
-
-df_temp = pd.read_csv('resources/temperature.csv',
-                      index_col=1,
-                      na_values=-9999).drop('STATION',axis=1)
-
-df_temp.index = pd.to_datetime(df_temp.index,format='%Y%m%d')
