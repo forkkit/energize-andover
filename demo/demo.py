@@ -12,7 +12,7 @@ import pandas as pd
 # IMPORT THE TREND DATA
 df_trend = pd.read_csv('trend.csv', engine='python', index_col=0, parse_dates=[0])
 
-# MAKE SURE IT'S AT THE RIGHT FREQUENCY
+# MAKE SURE IT'S AT A CONSTANT FREQUENCY
 df_trend = df_trend.dropna().asfreq('15 min')
 
 # FILL MISSING VALUES FROM THE PREVIOUS WEEK'S VALUES
