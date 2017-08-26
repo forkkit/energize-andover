@@ -10,13 +10,14 @@ import pandas as pd
 import numpy as np
 from icalendar import Calendar
 import pytz
-import datetime
 import matplotlib.pyplot as plt
 import matplotlib.mlab as mlab
 from scipy import optimize
 from scipy import stats
 from sklearn.ensemble import RandomForestRegressor
 from datetime import timedelta
+from datetime import datetime
+import multiprocessing as mp
 import math
 
 """
@@ -58,8 +59,8 @@ data : DataFrame or Series with DateTimeIndex
 *times: Tuple with start and end time strings as 'HH:MM'
 	or list of such tuples
 *include: Accepts a DataRange which is:
-    1) A datetime index (partial or formal)
-    2) A tuple of start and end datetime indexes (See 1)
+    1) A datetime reference (partial string or formal object)
+    2) A tuple of start and end datetime references (See 1)
         	Enter None to set to range min or max
     3) A list that contains any combination of types 1 and 2
 *blacklist: range of dates to be excluded.
@@ -95,7 +96,7 @@ def time_filter(data, **kwds):
     return out
 
 """
-convert_range_tz : DataRange(datetime.datetime), timezone --> DataRange
+convert_range_tz : tuple(datetime,datetime), timezone --> DataRange
 converts the ical default UTC timezone to the desired timezone
 """
 
@@ -116,7 +117,7 @@ def ical_ranges(file):
     cal_tz = pytz.timezone(cal['X-WR-TIMEZONE'])
     for event in cal.subcomponents:
         event_range=(event['dtstart'].dt,event['dtend'].dt)
-        if isinstance(event_range[0],datetime.datetime):
+        if isinstance(event_range[0],datetime):
             event_range = convert_range_tz(event_range, cal_tz)
         ranges.append(event_range)
     return ranges
@@ -256,20 +257,21 @@ def only_full_days(data,freq=None):
     return data.groupby(data.index.date).filter(lambda x: len(x)==pp_day)
 
 class BaseModel:
-    def __init__(self, data, td_input, td_gap, td_output,
-                 sample_freq=pd.Timedelta(days=1), time_attrs=None,
-                 extra_features=None,est_kwargs=None):
+    def __init__(self, data, input_size, gap_size, output_size,
+                 sample_freq=pd.Timedelta(days=1), sample_agg_method='mean',
+                 time_attrs=None, extra_features=None,est_kwargs=None):
         self.data = data.asfreq(data.index.inferred_freq)
         self.n = len(data)
         self.data_freq = pd.Timedelta(self.data.index.freq)
-        self.td_input = td_input
-        self.td_gap = td_gap
-        self.td_output = td_output
+        self.input_size = input_size
+        self.gap_size = gap_size
+        self.output_size = output_size
         self.sample_freq = sample_freq
+        self.sample_agg_method = sample_agg_method
         self.time_attrs = time_attrs if time_attrs is not None else []
         self.est_kwargs = est_kwargs if est_kwargs is not None else dict()
         self.training_windows_ = None
-        self.extra_features = (extra_features if extra_features
+        self.extra_features = (extra_features if extra_features is not None
                                else self._get_blank_feat())
 
     def _get_training_windows(self):
@@ -282,13 +284,13 @@ class BaseModel:
         X_ixs : list of [start, end] datetime64 pairs for the input values
         y_ixs : list of [start, end] datetime64 pairs for the output values
         """
-        input_size = int(self.td_input / self.data_freq)
-        gap_size = int(self.td_gap / self.data_freq)
-        output_size = int(self.td_output / self.data_freq)
+        n_input = int(self.input_size / self.data_freq)
+        n_gap = int(self.gap_size / self.data_freq)
+        n_output = int(self.output_size / self.data_freq)
         ix_windows = rolling_window(self.data.index,
-                                    input_size + gap_size + output_size,
-                                    output_size)
-        X_ixs,_,y_ixs = np.split(ix_windows,[input_size,input_size+gap_size],1)
+                                    n_input + n_gap + n_output,
+                                    n_output)
+        X_ixs,_,y_ixs = np.split(ix_windows,[n_input,n_input+n_gap],1)
         X_ixs = np.array(list(zip(X_ixs.min(1),X_ixs.max(1))))
         y_ixs = np.array(list(zip(y_ixs.min(1),y_ixs.max(1))))
         return X_ixs,y_ixs
@@ -310,12 +312,12 @@ class BaseModel:
             period.
         """
         start = self.data.index.min()
-        end = self.data.index.max() + self.td_gap + self.td_output
+        end = self.data.index.max() + self.gap_size + self.output_size
         ix = pd.date_range(start,end,freq=self.data_freq)
         return pd.DataFrame(index=ix)
     
     def _invalid_feat(self,data):
-        return data.asfreq(self.td_output).isnull().values.any()
+        return data.asfreq(self.output_size).isnull().values.any()
     
     def _validated_feat(self,feat):
         """ Ensures that the feature set is at a high enough frequency for the
@@ -334,9 +336,9 @@ class BaseModel:
         
         #Ensure the extra features are at least the frequency of the output
         feat_freq = pd.Timedelta(inferred_freq(feat))
-        if feat_freq > self.td_output:
-            feat = feat.asfreq(self.td_output)
-        fallback = feat.asfreq(self.td_output).ffill()
+        if feat_freq > self.output_size:
+            feat = feat.asfreq(self.output_size)
+        fallback = feat.asfreq(self.output_size).ffill()
         return feat.fillna(fallback)
         
     def _get_ixs(self,timestamp):
@@ -354,21 +356,21 @@ class BaseModel:
         y_ix : DatetimeIndex
             The y indicies of the prediction period
         """
-        X_ix = pd.date_range(timestamp - self.td_gap - self.td_input,
-                              timestamp - self.td_gap,
+        X_ix = pd.date_range(timestamp - self.gap_size - self.input_size,
+                              timestamp - self.gap_size,
                               freq=self.sample_freq,
                               closed='left')
         y_ix = pd.date_range(timestamp,
-                             timestamp+self.td_output,
+                             timestamp+self.output_size,
                              freq=self.data_freq,
                              closed='left')
         return X_ix, y_ix
     
     def _get_windows(self,timestamp):
-        X_w = (timestamp - self.td_gap - self.td_input,
-               timestamp - self.td_gap - self.data_freq)
+        X_w = (timestamp - self.gap_size - self.input_size,
+               timestamp - self.gap_size - self.data_freq)
         y_w = (timestamp,
-               timestamp + self.td_output - self.data_freq)
+               timestamp + self.output_size - self.data_freq)
         return X_w,y_w
     
     def _get_time_feat(self, datetime):
@@ -390,11 +392,65 @@ class BaseModel:
             The inferred starting date of the next prediction
         """
         pred_start_date = (pd.Timestamp(data.index.max())
-                            + self.data_freq + self.td_gap)
+                            + self.data_freq + self.gap_size)
         return pred_start_date
     
-    
-    
+    def to_string(val):
+        """ Extracts some descriptive information from various types of data.
+        These are spefically tested for the use of creating logs from different
+        types of model data. For instance, it will return a formatted list
+        of column headers from a DataFrame, or the title of a Series.
+        
+        Parameters
+        ----------
+        val : object
+            An arbitrary value
+            
+        Returns:
+        out : string
+            The formatted output string
+        """
+        if isinstance(val,str):
+            out = val
+        elif val is None:
+            out = ''
+        elif isinstance(val,dict):
+            out = ', '.join('{}:{}'.format(key,BaseModel.to_string(val)) for key,val in val.items())
+        elif isinstance(val,(list,pd.DataFrame)):
+            out = ', '.join(val)
+        elif isinstance(val,pd.Series):
+            out = val.name
+        else:
+            out = str(val)
+        return out
+
+    def log(self):
+        """ Creates a table of pertinent information for the current state of
+        a model, used for making logs of predictions
+        
+        Returns
+        -------
+        log : Series
+            The index contains class attribute names and other data labels,
+            the rows contain the corresponding data formatted as a string
+        """
+        parse = BaseModel.to_string
+        log_attrs = ['n','data_freq','input_size','gap_size','output_size',
+                      'sample_freq','sample_agg_method','time_attrs',
+                      'extra_features','est_kwargs']
+        
+        log = pd.Series()
+        log['timestamp'] = datetime.strftime(datetime.now(),
+                                             '%Y-%m-%d %H:%M:%S')
+        log['pred_start'] = parse(self._get_pred_start_date(self.data))
+        log['pred_end'] = parse(self._get_pred_start_date(self.data)
+                                    + self.output_size - self.data_freq)
+        log['data_start'] = parse(self.data.index.min())
+        log['data_end'] = parse(self.data.index.max())
+        for attr in log_attrs:
+            log[attr] = parse(getattr(self,attr))
+        return log
+
 class SingleRFModel(BaseModel):
     """ A Random Forest Model for forecasting a single set of data
     (i.e. a single circuit panel)
@@ -408,20 +464,27 @@ class SingleRFModel(BaseModel):
         frequency (if it is not explicity store in `pandas.DatetimeIndex.freq
         it will be inferred)
         
-    td_input : timedelta
+    input_size : timedelta
         The size of the input period used for selecting historical data values
         
-    td_gap : timedelta
+    gap_size : timedelta
         The size of the gap between the last of the historical data and the
         start of the output period
         
-    td_output : timedelta
+    output_size : timedelta
         The size of the output period (to be forecasted)
         
     sample_freq : timedelta, optional (default=timedelta(days=1))
         The chunk size that will break up the historical data and aggregate it
         into features (by mean). By default it will look at the daily averages
         among the input periods.
+        
+    sample_agg_method : string, optional (defaul='mean')
+        A string representing the aggregation method to be called on the
+        resampled historical data. For example, with the default value of
+        'mean' it will pull data features from
+        data.resample(sample_freq).mean() for the purpose of decreasing feature
+        load on the estimator.
     
     time_attrs : list of strings, optional (default=None)
         The list of DatetimeIndex attributes to use as regression features.
@@ -446,35 +509,33 @@ class SingleRFModel(BaseModel):
         sklearn.ensemble.RandomForestRegressor estimator
         
     """
-    
     def __init__(self, *args, **kwds):
         super().__init__(*args, **kwds)
-        self.rf = RandomForestRegressor(**self.est_kwargs)        
+        self.rf = RandomForestRegressor(**self.est_kwargs)
     
-    def _aggregated_data_features(self, window):
-        """ Aggregates the pools of data features. Since it may be resource
+    def _aggregated_data_features(self):
+        """ Aggregates the data features. Since it may be resource
         intensive to use every data point as a feature, this lets you combine
         a group of data points (as specified by `BaseModel.sample_freq`) into
         their mean value.
-        
-        Parameters
-        ----------
-        window : list of datetime
-            Pair of start and end times representing the window to aggregate
                 
         Returns
         -------
         agg : Series
-            The desired slice of data, downsampled and aggregated by mean
+            The model data, downsampled and aggregated by mean
         """
-        return self.data.resample(self.sample_freq).mean()[slice(*window)]
+        resampler = getattr(self.data.resample(self.sample_freq),
+                            self.sample_agg_method)
+        return resampler()
     
+    #@time_func
     def _get_feats(self, X_windows, y_windows):
-        data_feat = np.array([self._aggregated_data_features(w)
+        agg_data = self._aggregated_data_features()
+        data_feat = np.array([agg_data[slice(*w)]
                                 for w in X_windows])
         time_feat = np.array([self._get_time_feat(d)
                                 for d in np.array(y_windows)[:,0]])
-        extra_feat = np.array([self.extra_features.loc[slice(*w)].stack().values
+        extra_feat = np.array([self.extra_features[slice(*w)].stack().values
                                 for w in y_windows])
         return (data_feat,time_feat,extra_feat)
 
@@ -544,12 +605,16 @@ class SingleRFModel(BaseModel):
         vals,std = [s.rename(self.data.name) for s in (vals,std)]
         return vals,std
     
+    #@time_func
     def train(self):
         if self.training_windows_ is None:
             self.training_windows_ = self._get_training_windows()
         if self._invalid_feat(self.extra_features):
             self.extra_features = self._validated_feat(self.extra_features)
-        self.rf.fit(*self._get_training_arrays())
+        n_samples = len(self.training_windows_[0])
+        sample_weight=1-np.logspace(np.log10(0.5),-3,n_samples)+1e-3
+        self.rf.fit(*self._get_training_arrays(),
+                    sample_weight=sample_weight)
 
     def predict(self):
         """ Predict the next period of data
@@ -572,6 +637,28 @@ class SingleRFModel(BaseModel):
             variance. Accuracy is increased with a higher estimator count.
         """
         return self._get_prediction(self._get_pred_start_date(self.data))
+    
+    def reload_data(self, data=None, extra_features=None):
+        """ Reload data sources to allow continued predictions from an
+        existing model. Not intended to be used extensively, preferred to
+        remake/train a model with the new data.
+        
+        NOTE:
+        Updated attributes must have the same format as the existing attributes
+        or prediction will fail
+        
+        Parameters
+        ----------
+        data : Series, optional (default=None)
+            Updated set of historical data
+        extra_features : DataFrame, optional (default=None)
+            Updated table of additional features.
+        """
+        if data is not None:
+            self.data = data
+        if extra_features is not None:
+            self.extra_features = extra_features
+
 
 class MultiRFModel(BaseModel):
     """ A Random Forest regression model for forecasting multiple sets of data
@@ -598,11 +685,11 @@ class MultiRFModel(BaseModel):
         `MultiRFModel.data`
         
     """
-    
-    
+
     def __init__(self, data, *args, column_features=None, **kwargs):
         super().__init__(data,*args,**kwargs)
         self.models = {col:SingleRFModel(data[col],*args,**kwargs) for col in data}
+        self.column_features = column_features
         if column_features is not None:
             self._add_column_features(column_features)
     
@@ -611,7 +698,28 @@ class MultiRFModel(BaseModel):
         for col,col_feat in column_features.items():
             self.models[col].extra_features = pd.concat(
                     (common_feat,col_feat),axis=1)
+    
+    def subtrain(item):
+        """ Used for training submodels. This is a helper function needed for
+        the multiprocessing mapper in the `train` method.
+        
+        Parameters
+        ----------
+        item : tuple of (string, SingleRFModel)
+            A key, value pair from the `MultiRFModel.models` dictionary.
             
+        Returns
+        -------
+        col : string
+            The column name
+        trained : SingleRFModel
+            A trained copy of the inputted model
+        """
+        col, model = item
+        model.train()
+        return (col,model)
+    
+    #@time_func
     def train(self):
         """ Train the model to enable predictions. This trains each of the
         child `SingleRFModel` objects
@@ -619,7 +727,11 @@ class MultiRFModel(BaseModel):
         self.training_windows_ = self._get_training_windows()
         for model in self.models.values():
             model.training_windows_ = self.training_windows_
-            model.train()
+        pool= mp.Pool(processes=mp.cpu_count())
+        results = pool.map(MultiRFModel.subtrain,self.models.items())
+        pool.close()
+        pool.join()
+        self.models = dict(results)
         
     def predict(self):
         """ Predict the next period of data
@@ -645,6 +757,38 @@ class MultiRFModel(BaseModel):
         arr_vals, arr_std = list(zip(*preds))
         return (pd.concat(arr_vals,axis=1),
                 pd.concat(arr_std,axis=1))
+        
+    def reload_data(self, data=None, extra_features=None,
+                    column_features=None):
+        """ Reload data sources to allow continued predictions from an
+        existing model. Not intended to be used extensively, preferred to
+        remake/train a model with the new data.
+        
+        NOTE:
+        Updated attributes must have the same format as the existing attributes
+        or prediction will fail
+        
+        Parameters
+        ----------
+        data : DataFrame, optional (default=None)
+            Updated table of historical data
+        extra_features : DataFrame, optional (default=None)
+            Updated table of additional common features.
+        column_features : dict, optional (default=None)
+            Updated dictionary with column names as keys and feature DataFrames
+            as values.
+        """
+        for model in self.models.values():
+            model.reload_data(data,extra_features)
+        if column_features is not None:
+            self._add_column_features(column_features)
+            
+    def log(self):
+        attrs = ['column_features']
+        log = BaseModel.log(self)
+        for attr in attrs:
+            log[attr] = BaseModel.to_string(getattr(self,attr))
+        return log
 
 data_path = 'resources/2017 Mar - 2016 Aug - Electric - Detail - 24 Hrs.csv'
 
