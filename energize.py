@@ -678,7 +678,10 @@ class MultiRFModel(BaseModel):
         should also be at a set frequency (if it is not explicity store in
         `pandas.DatetimeIndex.freq it will be inferred)
     
-    column_features : dict of DataFrames
+    columns : list of strings, optional (default=None)
+        List of which columns you want to model from the data table
+    
+    column_features : dict of DataFrames, optional (default=None)
         Table of column-specific extra features to be regressed on. See
         `SingleRFModel.extra_features` for details of the required format of
         the DataFrames. The dict keys should correspond to column names in
@@ -686,9 +689,11 @@ class MultiRFModel(BaseModel):
         
     """
 
-    def __init__(self, data, *args, column_features=None, **kwargs):
+    def __init__(self, data, *args, columns=None, column_features=None, **kwargs):
         super().__init__(data,*args,**kwargs)
-        self.models = {col:SingleRFModel(data[col],*args,**kwargs) for col in data}
+        self.columns = columns if columns is not None else list(data.columns)
+        self.models = {col:SingleRFModel(data[col],*args,**kwargs)
+            for col in self.columns}
         self.column_features = column_features
         if column_features is not None:
             self._add_column_features(column_features)
@@ -778,8 +783,8 @@ class MultiRFModel(BaseModel):
             Updated dictionary with column names as keys and feature DataFrames
             as values.
         """
-        for model in self.models.values():
-            model.reload_data(data,extra_features)
+        for col,model in self.models.items():
+            model.reload_data(data[col],extra_features)
         if column_features is not None:
             self._add_column_features(column_features)
             
