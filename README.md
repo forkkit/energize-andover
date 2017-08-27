@@ -85,6 +85,9 @@ From this example you could say with approximately 95% confidence that you could
 ### Exporting
 You can call the `to_csv()` methods of the returned Pandas Series/DataFrame objects to save them as CSV files.
 
+### Logging
+Calling `model.log()` will generate a `pandas.Series` with certain attributes as the index along with their corresponding values. This is useful for generating a log of metadata along with scheduled predictions so that later on you know what model settings were used to create each prediction, should you decide to change the implementation at any point. This gives historical predictions some context.
+
 ## Other module methods
 Aside from the models there are some useful data manipulation functions included.
 
