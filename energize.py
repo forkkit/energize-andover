@@ -10,24 +10,21 @@ import pandas as pd
 import numpy as np
 from icalendar import Calendar
 import pytz
-import matplotlib.pyplot as plt
-import matplotlib.mlab as mlab
 from scipy import optimize
 from scipy import stats
 from sklearn.ensemble import RandomForestRegressor
-from datetime import timedelta
 from datetime import datetime
 import multiprocessing as mp
 import math
 
 """
-range_token_df: DataFrame, RangeToken --> DataFrame
+_range_token_df: DataFrame, RangeToken --> DataFrame
 Returns a dataframe filtered by the range token provided.
 
 A RangeToken is either a datetime index (parial or formal)
 or a tuple of start/end datetime indexes
 """
-def range_token_df(data, token):
+def _range_token_df(data, token):
     if (type(token)==str):
         try:
             return data[token]
@@ -37,17 +34,17 @@ def range_token_df(data, token):
         return data[slice(*token)][:-1]
 
 """
-data_in_range : DataFrame/Series, Data range --> DataFrame/Series
+_data_in_range : DataFrame/Series, Data range --> DataFrame/Series
 filters the input data by the date range provided
 """
 
-def data_in_range(data, d_range):
+def _data_in_range(data, d_range):
     if (type(d_range)==list):
         return pd.concat(list(map(
-                lambda token: range_token_df(data,token),
+                lambda token: _range_token_df(data,token),
                 d_range))).sort_index()
     else:
-        return range_token_df(data,d_range)
+        return _range_token_df(data,d_range)
 
 
 """
@@ -78,7 +75,7 @@ ranges are all inclusive
 def time_filter(data, **kwds):
     out = data
     if ('include' in kwds):
-        out = data_in_range(out,kwds['include'])
+        out = _data_in_range(out,kwds['include'])
     if ('times' in kwds):
         d_range = kwds['times']
         if type(d_range[0]) is tuple:
@@ -92,15 +89,16 @@ def time_filter(data, **kwds):
     if ('months' in kwds):
         out = out[[month in kwds['months'] for month in out.index.month]]
     if ('blacklist' in kwds):
-        out = out.drop(data_in_range(data, kwds['blacklist']).index, errors='ignore')
+        out = out.drop(_data_in_range(data, kwds['blacklist']).index,
+                       errors='ignore')
     return out
 
 """
-convert_range_tz : tuple(datetime,datetime), timezone --> DataRange
+_convert_range_tz : tuple(datetime,datetime), timezone --> DataRange
 converts the ical default UTC timezone to the desired timezone
 """
 
-def convert_range_tz(range_utc, local_tz):
+def _convert_range_tz(range_utc, local_tz):
     convert = lambda time: pytz.utc.localize(
             time.replace(tzinfo=None)).astimezone(
                     local_tz).replace(tzinfo=None)
@@ -118,7 +116,7 @@ def ical_ranges(file):
     for event in cal.subcomponents:
         event_range=(event['dtstart'].dt,event['dtend'].dt)
         if isinstance(event_range[0],datetime):
-            event_range = convert_range_tz(event_range, cal_tz)
+            event_range = _convert_range_tz(event_range, cal_tz)
         ranges.append(event_range)
     return ranges
 
@@ -130,14 +128,6 @@ Get the median absolute deviation of the Series or each Dataframe column
 
 def mad(data, **kwds):
     return abs(data.sub(data.median(**kwds),axis=0)).median(**kwds)
-
-"""
-plot_normal: float, float --> void
-Plot a normal distribution with the given mu and sigma
-"""
-def plot_normal(mu, sigma, **kwds):
-    x = np.linspace(mu-8*sigma,mu+8*sigma, 100)
-    plt.plot(x,mlab.normpdf(x, mu, sigma), **kwds)
 
 """
 unstack_by_time: Series --> DataFrame
