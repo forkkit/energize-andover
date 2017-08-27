@@ -1,9 +1,9 @@
-This module contains methods and classes for trend data manipulation and prediction.
+This module contains methods and classes for trend data manipulation and prediction. It was designed with building electrical trend data in mind, but could easily be extended to other data such as natural gas or water usage.
 
-# Usage
-Download the `energize.py` file from the repo and put it in your working directory to import it.
+# Installation
+Download the `energize.py` file from the repo and put it in your working directory.
+I tend to abbreviate the name as `egz` if making freqent references to its contents.
 
-I prefer to use:
 	import energize as egz
 
 ## Modeling
@@ -19,8 +19,10 @@ If the source data has missing entries, it is suggested to deal with those befor
 ### Input/gap/output size
 The input size controls how much of your data will be used as an input to predict future values. The output size controls how large the prediction period should be. The gap size controls the length of time between the end of the input (i.e. the current time) and the start of predictions, i.e. how far in advance predictions will be made.
 
+These arguments should be a timedelta-like object such as `datetime.timedelta`, `pandas.Timedelta`, `numpy.timedelta64`, etc.
+
 ### Input downsampling
-When the input data is at a high frequency it can be demanding to predict off every data point. The `sample_freq` parameter lets you pool together sections of the input at the desired pool size. The `sample_agg_method` determines how these pools will be aggregated. By default it takes the average value of each pool. The parameter takes a string representing one of the resampling methods (e.g. `'mean'`, `'sum'`, `'asfreq'`, etc.). See the [Pandas documentation](https://pandas.pydata.org/pandas-docs/stable/generated/pandas.DataFrame.resample.html) for more options.
+When the input data is at a high frequency it can be demanding to predict off every data point. The `sample_freq` parameter lets you pool together sections of the input at the desired pool size. The `sample_agg_method` determines how these pools will be aggregated. By default it takes the average value of each pool. The parameter takes a string representing one of the resampling methods (e.g. `'mean'`, `'sum'`, `'asfreq'`, etc.). See the [Pandas `resample()` documentation](https://pandas.pydata.org/pandas-docs/stable/generated/pandas.DataFrame.resample.html) for more options.
 
 ### Time features
 In addition to historical trend data, features about the target prediction period can be used to make predictions. The `time_attrs` parameter can hold a list of attributes you would like to regress on stored as strings. These values can be [any of the time/date components](https://pandas.pydata.org/pandas-docs/stable/timeseries.html#time-date-components) of a `pandas.Timestamp` object.
@@ -60,20 +62,31 @@ A `MultiRFModel` simply trains each of its child `SingleRFModel` objects.
 ### Predicting
 The period to be predicted will automatically be inferred from the historical trend data. The next available prediction period will automatically be predicted on.
 
+For example, if your data is at 15 minute intervals, your gap size is 1 day, prediction size is 1 day and the final data point falls on Feb 2nd at 23:45:00, the prediction will span from 00:00:00 to 23:45:00 on Feb 4th.
+
 Calling `model.predict()` will return a tuple of two objects. The first is a table of predicted values, the second is a table of corresponding prediction standard deviations.
 
 #### Stats interpretation
-The standard deviations are an estimate inspired by [this article](http://blog.datadive.net/prediction-intervals-for-random-forests/). A Random Forest is composed of a number of decision trees. This assumes each set of trees to resemble a sample of predictions of the overall forest. The table contains the standard deviations of those "samples".
+The standard deviations are an estimate inspired by [this article](http://blog.datadive.net/prediction-intervals-for-random-forests/). A Random Forest is composed of a number of decision trees. This treats each set of trees as a sample of predictions of the overall forest. The table contains the standard deviations of those "samples".
 
-The distribution of the trees' predictions is approximately normal. To be conservative at smaller estimator counts, you may prefer to use a Student's t-distribution taking into account the number of tree estimators in your forest.
+Note that in the article I linked, intervals are selected by sample quantiles (they even make a note about this being more robust than assuming normality). In my case I used a normality assumption and returned a standard deviation value. The reason for this is so I can return a single measure of variance without any specific confidence level baked in to give the user more flexibility in their classification of an "anomaly"
+
+To be conservative at smaller estimator counts, you may prefer to use a Student's t-distribution and take into account the number of tree estimators in your forest.
 
 The `scipy `library makes it easy to work with these kinds of distributions. Distributions have a `ppf` method that will find a threshold Z-score from a desired one-tailed confidence interval level.
 
-### Exporting
-You can simply call the `to_csv()` method of the returned tables to save them as CSV files.
+    z_thresh = scipy.stats.norm.ppf(0.95)
+    thresh = pred_vals + z_thresh*pred_stds
+    anomalies = true_vals[true_vals > thresh]
+    est_diff = anomalies - thresh[anomalies.index]
 
-## Other methods
-Aside from the models there are some useful data manipulation functions.
+From this example you could say with approximately 95% confidence that you could expect to save at least the contents of `est_diff`. If the trend values were power values you could estimate energy savings by using `egz.trapz` or if they were energy values you could just `sum()` the series.
+
+### Exporting
+You can call the `to_csv()` methods of the returned Pandas Series/DataFrame objects to save them as CSV files.
+
+## Other module methods
+Aside from the models there are some useful data manipulation functions included.
 
 Some of the most useful ones:
 
@@ -81,6 +94,7 @@ Some of the most useful ones:
  - `ical_ranges()` for using .ical files to pass to the filter
  - `intersect()` for extracting sections where tables overlap
  - `only_full_days()` for cutting off partial days
+ - `trapz()` for estimating energy consumption from power use
 
 More info available in the method signatures.
 
