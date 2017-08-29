@@ -35,12 +35,12 @@ The `est_kwargs` dictionary will pass arguments to the underlying `sklearn.ensem
 
 Here's two main ones to pay attention to:
 
- - `n_estimators` : number of trees in a forest. Higher is generally better.
+ - `n_estimators` : number of trees in a forest. Higher is generally better, past about 128 there is little to no improvement.
       - default: 10
-      - recommended: 50-100
+      - recommended: 64-128
  - `n_jobs` : number of cores to use for processing the forest
-       - default: 1
-       - recommended: -1 (use all cores)
+      - default: 1
+      - recommended: -1 (use all cores)
 
 ### Column-specific features (only for MultiRFModel)
 This functions the same way as the regular `extra_features` DataFrame. `column_features` is a dictionary of these types of DataFrames, where each key is a column title from the trend data and and the value is a feature table.
