@@ -31,7 +31,7 @@ model = egz.MultiRFModel(
         input_size=pd.Timedelta(weeks=4),
         gap_size=pd.Timedelta(days=1),
         output_size=pd.Timedelta(days=1),
-        time_attrs=['dayofweek','month'],
+        time_attrs=['dayofweek','dayofyear'],
         extra_features=df_extras,
         est_kwargs={'n_jobs':-1,
                      'n_estimators':128})
