@@ -1,5 +1,7 @@
 This module contains methods and classes for trend data manipulation and prediction. It was designed with building electrical trend data in mind, but could easily be extended to other data such as natural gas or water usage.
 
+Please refer to the [`demo`](demo/demo.py) script and directory for an example of how to use this module for trend forecasting. The demo uses the recommended settings for Andover High School power data.
+
 # Installation
 Download the `energize.py` file from the repo and put it in your working directory.
 I tend to abbreviate the name as `egz` if making freqent references to its contents.
