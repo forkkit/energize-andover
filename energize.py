@@ -519,7 +519,6 @@ class SingleRFModel(BaseModel):
                             self.sample_agg_method)
         return resampler()
     
-    #@time_func
     def _get_feats(self, X_windows, y_windows):
         agg_data = self._aggregated_data_features()
         data_feat = np.array([agg_data[slice(*w)]
@@ -596,7 +595,6 @@ class SingleRFModel(BaseModel):
         vals,std = [s.rename(self.data.name) for s in (vals,std)]
         return vals,std
     
-    #@time_func
     def train(self):
         if self.training_windows_ is None:
             self.training_windows_ = self._get_training_windows()
@@ -716,7 +714,6 @@ class MultiRFModel(BaseModel):
         model.train()
         return (col,model)
     
-    #@time_func
     def train(self):
         """ Train the model to enable predictions. This trains each of the
         child `SingleRFModel` objects
