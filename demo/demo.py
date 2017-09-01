@@ -25,15 +25,16 @@ df_trend = egz.only_full_days(df_trend)
 df_extras = pd.read_csv('extras.csv',index_col=0,parse_dates=[0])
 
 # CONSTRUCT THE MODEL
-model = egz.MultiRFModel(data=df_trend,
-                         columns=['Main (kW)', 'Lighting (kW)', 'Plug load (kW)'],
-                         input_size=pd.Timedelta(weeks=4),
-                         gap_size=pd.Timedelta(days=1),
-                         output_size=pd.Timedelta(days=1),
-                         time_attrs=['dayofweek','month'],
-                         extra_features=df_extras,
-                         est_kwargs={'n_jobs':-1,
-                                     'n_estimators':10})
+model = egz.MultiRFModel(
+        data=df_trend,
+        columns=['Main (kW)', 'Lighting (kW)', 'Plug load (kW)'],
+        input_size=pd.Timedelta(weeks=4),
+        gap_size=pd.Timedelta(days=1),
+        output_size=pd.Timedelta(days=1),
+        time_attrs=['dayofweek','month'],
+        extra_features=df_extras,
+        est_kwargs={'n_jobs':-1,
+                     'n_estimators':128})
 # TRAIN THE MODEL
 model.train()
 
