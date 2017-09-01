@@ -16,6 +16,7 @@ from sklearn.ensemble import RandomForestRegressor
 from datetime import datetime
 import multiprocessing as mp
 import math
+from collections import OrderedDict
 
 """
 _range_token_df: DataFrame, RangeToken --> DataFrame
@@ -682,8 +683,9 @@ class MultiRFModel(BaseModel):
     def __init__(self, data, *args, columns=None, column_features=None, **kwargs):
         super().__init__(data,*args,**kwargs)
         self.columns = columns if columns is not None else list(data.columns)
-        self.models = {col:SingleRFModel(data[col],*args,**kwargs)
-            for col in self.columns}
+        self.models = OrderedDict(
+                [(col,SingleRFModel(data[col],*args,**kwargs))
+                for col in self.columns])
         self.column_features = column_features
         if column_features is not None:
             self._add_column_features(column_features)
@@ -726,7 +728,7 @@ class MultiRFModel(BaseModel):
         results = pool.map(MultiRFModel.subtrain,self.models.items())
         pool.close()
         pool.join()
-        self.models = dict(results)
+        self.models = OrderedDict(results)
         
     def predict(self):
         """ Predict the next period of data
@@ -779,8 +781,8 @@ class MultiRFModel(BaseModel):
             self._add_column_features(column_features)
             
     def log(self):
-        attrs = ['column_features']
+        unique_attrs = ['column_features']
         log = BaseModel.log(self)
-        for attr in attrs:
+        for attr in unique_attrs:
             log[attr] = BaseModel.to_string(getattr(self,attr))
         return log
